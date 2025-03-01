@@ -1,0 +1,83 @@
+name: AXK-Insurance CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 'lts/*'
+
+      - name: Install dependencies
+        run: yarn install
+
+      - name: Build Next.js Project
+        run: yarn build
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Deploy to Ubuntu Server
+        uses: appleboy/ssh-action@v0.1.3
+        with:
+          host: ${{ secrets.HOST }}
+          username: ${{ secrets.USERNAME }}
+          password: ${{ secrets.PASSWORD }}
+          script: |
+            DEPLOY_DIR="/var/www/axk-insurance/web-app"
+            PROCESS_NAME="axk-insurance"
+
+            # Ensure the deployment directory exists
+            if [ ! -d "$DEPLOY_DIR" ]; then
+              echo "Deployment directory does not exist. Creating and cloning repo."
+              mkdir -p $DEPLOY_DIR
+              git clone https://github.com/AXKLEDGER/web-app.git $DEPLOY_DIR || { echo "Git clone failed"; exit 1; }
+            else
+              echo "Deployment directory exists. Pulling latest changes."
+              cd $DEPLOY_DIR || { echo "Failed to navigate to $DEPLOY_DIR"; exit 1; }
+              git pull origin main || { echo "Git pull failed"; exit 1; }
+            fi
+
+            cd $DEPLOY_DIR
+
+            # Ensure Node.js and Yarn are properly configured
+            echo "Loading NVM"
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+            echo "NVM loaded"
+
+            # Install dependencies
+            echo "Installing dependencies"
+            yarn install || { echo "Yarn install failed"; exit 1; }
+
+            # Build the project
+            echo "Building the project"
+            yarn build || { echo "Build failed"; exit 1; }
+
+            # Start or restart the process using PM2
+            if pm2 describe $PROCESS_NAME > /dev/null; then
+              echo "Restarting existing PM2 process."
+              pm2 restart $PROCESS_NAME || { echo "PM2 restart failed"; exit 1; }
+            else
+              echo "Starting new PM2 process on port 3006."
+              pm2 start yarn --name "$PROCESS_NAME" -- start || { echo "PM2 start failed"; exit 1; }
+            fi
+
+            # Save PM2 configuration
+            echo "Saving PM2 process list"
+            pm2 save || { echo "PM2 save failed"; exit 1; }
+
+            echo "Deployment complete!"
